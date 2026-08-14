@@ -75,8 +75,23 @@ n'apparaissent pas dans les logs en cas d'erreur.
 
 ### Les poser
 
-Depuis ce dossier, avec les deux fichiers JSON préparés en local (ils sont
-gitignorés) :
+`scripts/collect-secrets.mjs` assemble les payloads à partir des `.env.local` et
+`vapid-keys.local` déjà présents dans les dossiers des jeux. Il n'affiche jamais
+une valeur, seulement sa provenance et sa longueur.
+
+```bash
+node scripts/collect-secrets.mjs
+```
+
+Sans argument il ne fait qu'un rapport. Avec `--write` il génère
+`cron-secrets.local.json` (rempli) et `deploy-hooks.local.json` (gabarit vide, ces
+URLs n'existent que dans Vercel). Les deux fichiers sont gitignorés.
+
+Au 14 août 2026, 7 jeux sur 10 sont résolus automatiquement. `rivalsdle`,
+`tekkendle` et `valdle` n'ont pas de `CRON_SECRET` exploitable en local : les
+récupérer dans Vercel → projet → Settings → Environment Variables.
+
+Puis :
 
 ```bash
 gh secret set CRON_SECRETS --repo Tristan-Laine/taxon-cron < cron-secrets.local.json
@@ -85,6 +100,9 @@ gh secret set CRON_SECRETS --repo Tristan-Laine/taxon-cron < cron-secrets.local.
 ```bash
 gh secret set DEPLOY_HOOKS --repo Tristan-Laine/taxon-cron < deploy-hooks.local.json
 ```
+
+Un token erroné ne passe pas inaperçu : la route répond 401, le job liste le jeu
+fautif et se termine en erreur.
 
 ## Tester sans attendre le cron
 
