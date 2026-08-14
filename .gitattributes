@@ -1,0 +1,4 @@
+# Ce repo est édité sous Windows mais exécuté sur des runners Linux. Un CRLF
+# dans un bloc `run:` casse le job avec des erreurs `$'\r': command not found`.
+# On force donc LF dans le dépôt pour tout ce qui est texte.
+* text=auto eol=lf

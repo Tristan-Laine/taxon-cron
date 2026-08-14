@@ -1,0 +1,82 @@
+# Hourly trigger for the "streak at risk" push, for EVERY game at once.
+#
+# Replaces the per-repo push-cron.yml that used to live in each DLE. One job per
+# hour pings all the sites instead of ten jobs doing one curl each: GitHub bills
+# a full minute per JOB (a 3 second curl costs the same as a 48 second build), so
+# ten separate repos cost ten times the same work.
+#
+# Each /api/push-send route decides on its own who is in their local evening and
+# at risk, so an hourly trigger covers every timezone. The route is a no-op for
+# everyone not currently at risk and de-duplicates to at most one nudge per
+# subscriber per day.
+#
+# WHY MINUTE 23: scheduled runs fired at minute 0 are the most congested slot on
+# GitHub and get silently dropped. The old per-repo crons all fired at '0 * * * *'
+# and only landed about half the time (111 to 218 runs over 14 days, out of 336
+# expected). An off-peak minute is materially more reliable and costs nothing.
+#
+# A game whose curl fails does NOT stop the others: every site is attempted, then
+# the job fails at the end so the failure still shows up in the Actions tab.
+#
+# Setup: see README.md (secret CRON_SECRETS).
+
+name: Streak push (hourly, all games)
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch: {}
+
+# If a run is still going when the next hour fires, skip the new one rather than
+# stacking sends.
+concurrency:
+  group: streak-push
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ping /api/push-send on every game
+        env:
+          CRON_SECRETS: ${{ secrets.CRON_SECRETS }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${CRON_SECRETS:-}" ]; then
+            echo "::error::Missing CRON_SECRETS secret (see README.md)"
+            exit 1
+          fi
+          if ! printf '%s' "$CRON_SECRETS" | jq -e . >/dev/null 2>&1; then
+            echo "::error::CRON_SECRETS is not valid JSON (expected {\"<id>\": \"<token>\"})"
+            exit 1
+          fi
+
+          failed=""
+          while read -r id domain; do
+            token=$(printf '%s' "$CRON_SECRETS" | jq -r --arg id "$id" '.[$id] // empty')
+            if [ -z "$token" ]; then
+              echo "::warning::$id has no entry in CRON_SECRETS, skipped"
+              continue
+            fi
+            # Mask before use: curl echoes the request in its error output.
+            echo "::add-mask::$token"
+
+            if curl --fail --silent --show-error --max-time 30 \
+                 --header "Authorization: Bearer $token" \
+                 "https://$domain/api/push-send" --output /dev/null; then
+              echo "ok    $id"
+            else
+              echo "::warning::$id: /api/push-send failed"
+              failed="$failed $id"
+            fi
+          done < <(jq -r '.[] | "\(.id) \(.domain)"' sites.json)
+
+          if [ -n "$failed" ]; then
+            echo "::error::push-send failed for:$failed"
+            exit 1
+          fi
+          echo "All games pinged."

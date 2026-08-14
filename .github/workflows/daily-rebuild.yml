@@ -1,0 +1,81 @@
+# Nightly prerender rebuild for EVERY game at once: pings each Vercel deploy
+# hook so the sites rebuild from their latest commit and the daily pages roll
+# over (yesterday's answers page appears in /daily and /answers, and the sitemap
+# grows by one URL).
+#
+# Replaces the per-repo daily-rebuild.yml that used to live in each DLE. Same
+# reasoning as push-hourly.yml: GitHub bills per JOB, so ten repos pinging one
+# hook each cost ten times one job pinging ten hooks.
+#
+# WHY ~10:10 UTC: at that moment every timezone from UTC-10 to UTC+13 is on the
+# same calendar date, so the newest archive page (yesterday) is finished for
+# everyone on Earth and the static HTML can never spoil a puzzle someone can
+# still play. The valid window is 10:00 to 11:00 UTC; 10:13 and 10:43 sit inside
+# it while avoiding the congested :00 and :10 slots. The 10:43 run is a safety
+# retry (GitHub cron runs can be delayed or skipped); the rebuild is idempotent,
+# two runs produce the same site.
+#
+# A game whose hook fails does NOT stop the others: every hook is attempted, then
+# the job fails at the end so the failure still shows up in the Actions tab.
+#
+# Setup: see README.md (secret DEPLOY_HOOKS).
+
+name: Daily prerender rebuild (all games)
+
+on:
+  schedule:
+    - cron: '13 10 * * *'
+    - cron: '43 10 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: daily-rebuild
+  cancel-in-progress: false
+
+jobs:
+  trigger-rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ping every Vercel deploy hook
+        env:
+          DEPLOY_HOOKS: ${{ secrets.DEPLOY_HOOKS }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${DEPLOY_HOOKS:-}" ]; then
+            echo "::error::Missing DEPLOY_HOOKS secret (see README.md)"
+            exit 1
+          fi
+          if ! printf '%s' "$DEPLOY_HOOKS" | jq -e . >/dev/null 2>&1; then
+            echo "::error::DEPLOY_HOOKS is not valid JSON (expected {\"<id>\": \"<hook url>\"})"
+            exit 1
+          fi
+
+          failed=""
+          while read -r id; do
+            hook=$(printf '%s' "$DEPLOY_HOOKS" | jq -r --arg id "$id" '.[$id] // empty')
+            if [ -z "$hook" ]; then
+              echo "::warning::$id has no entry in DEPLOY_HOOKS, skipped"
+              continue
+            fi
+            # A deploy hook URL IS the credential: mask it before curl can echo
+            # it back in an error message.
+            echo "::add-mask::$hook"
+
+            if curl --fail --silent --show-error --max-time 30 \
+                 --request POST "$hook" --output /dev/null; then
+              echo "ok    $id"
+            else
+              echo "::warning::$id: deploy hook failed"
+              failed="$failed $id"
+            fi
+          done < <(jq -r '.[].id' sites.json)
+
+          if [ -n "$failed" ]; then
+            echo "::error::deploy hook failed for:$failed"
+            exit 1
+          fi
+          echo "All rebuilds queued."
