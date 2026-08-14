@@ -65,12 +65,21 @@ jobs:
             # Mask before use: curl echoes the request in its error output.
             echo "::add-mask::$token"
 
-            if curl --fail --silent --show-error --max-time 30 \
-                 --header "Authorization: Bearer $token" \
-                 "https://$domain/api/push-send" --output /dev/null; then
-              echo "ok    $id"
+            # Pas de --fail: on veut lire le corps MEME en erreur. La route
+            # repond {"total","eligible","sent","failed","removed"} en 200 et
+            # {"error":"Unauthorized"} en 401, donc le log dit exactement quel
+            # jeu a un mauvais token. Aucun secret dans ces reponses.
+            body=$(curl --silent --show-error --max-time 30 \
+                     --header "Authorization: Bearer $token" \
+                     --write-out '\n%{http_code}' \
+                     "https://$domain/api/push-send" 2>&1)
+            code=$(printf '%s' "$body" | tail -n1)
+            payload=$(printf '%s' "$body" | sed '$d')
+
+            if [ "$code" = "200" ]; then
+              echo "ok    $id  $payload"
             else
-              echo "::warning::$id: /api/push-send failed"
+              echo "::warning::$id: HTTP $code  $payload"
               failed="$failed $id"
             fi
           done < <(jq -r '.[] | "\(.id) \(.domain)"' sites.json)

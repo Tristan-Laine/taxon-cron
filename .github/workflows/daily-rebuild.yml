@@ -65,13 +65,17 @@ jobs:
             # it back in an error message.
             echo "::add-mask::$hook"
 
-            if curl --fail --silent --show-error --max-time 30 \
-                 --request POST "$hook" --output /dev/null; then
-              echo "ok    $id"
-            else
-              echo "::warning::$id: deploy hook failed"
-              failed="$failed $id"
-            fi
+            # Vercel repond 201 + {"job":{"id":...,"state":"PENDING"}}. On lit le
+            # code pour distinguer un hook revoque (404) d'un site en panne.
+            code=$(curl --silent --show-error --max-time 30 \
+                     --request POST "$hook" \
+                     --write-out '%{http_code}' --output /dev/null 2>&1)
+
+            case "$code" in
+              2*) echo "ok    $id  HTTP $code" ;;
+              *)  echo "::warning::$id: deploy hook HTTP $code"
+                  failed="$failed $id" ;;
+            esac
           done < <(jq -r '.[].id' sites.json)
 
           if [ -n "$failed" ]; then
