@@ -41,6 +41,10 @@ for (const site of sites) {
     cronSecrets[site.id] = hit.value
     console.log(`  ok       ${site.id.padEnd(13)} ${hit.from} (${hit.value.length} caracteres)`)
   } else {
+    // Clé présente mais vide: le fichier montre alors les 10 jeux, donc on voit
+    // immédiatement où coller. Un jeu laissé vide est simplement ignoré par le
+    // workflow (avec un warning), jamais envoyé avec un token invalide.
+    cronSecrets[site.id] = ''
     missing.push(site)
     console.log(`  MANQUANT ${site.id.padEnd(13)} a recuperer dans Vercel > ${site.name} > Settings > Environment Variables`)
   }
