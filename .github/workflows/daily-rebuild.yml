@@ -65,15 +65,21 @@ jobs:
             # it back in an error message.
             echo "::add-mask::$hook"
 
-            # Vercel repond 201 + {"job":{"id":...,"state":"PENDING"}}. On lit le
-            # code pour distinguer un hook revoque (404) d'un site en panne.
-            code=$(curl --silent --show-error --max-time 30 \
+            # Vercel repond 201 + {"job":{"id":...,"state":"PENDING"}} en succes,
+            # et un {"error":{"code":...,"message":...}} explicite en echec. On
+            # garde le corps: sans lui, une panne GitHub (Vercel n'arrive plus a
+            # telecharger le repo, code "incorrect_git_source_info") et un hook
+            # reellement revoque produisent tous deux un 400 muet. Le corps ne
+            # contient jamais l'URL du hook, et elle est masquee de toute facon.
+            resp=$(curl --silent --show-error --max-time 30 \
                      --request POST "$hook" \
-                     --write-out '%{http_code}' --output /dev/null 2>&1)
+                     --write-out '\n%{http_code}' 2>&1)
+            code=$(printf '%s' "$resp" | tail -n1)
+            payload=$(printf '%s' "$resp" | sed '$d')
 
             case "$code" in
               2*) echo "ok    $id  HTTP $code" ;;
-              *)  echo "::warning::$id: deploy hook HTTP $code"
+              *)  echo "::warning::$id: HTTP $code  $payload"
                   failed="$failed $id" ;;
             esac
           done < <(jq -r '.[].id' sites.json)
