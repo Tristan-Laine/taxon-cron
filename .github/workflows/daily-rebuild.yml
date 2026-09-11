@@ -1,7 +1,7 @@
 # Nightly prerender rebuild for EVERY game at once: pings each Vercel deploy
 # hook so the sites rebuild from their latest commit and the daily pages roll
-# over (yesterday's answers page appears in /daily and /answers, and the sitemap
-# grows by one URL).
+# over (/answers shows yesterday's solutions, and the sitemap gets a fresh
+# <lastmod>).
 #
 # Replaces the per-repo daily-rebuild.yml that used to live in each DLE. Same
 # reasoning as push-hourly.yml: GitHub bills per JOB, so ten repos pinging one
@@ -11,12 +11,35 @@
 # same calendar date, so the newest archive page (yesterday) is finished for
 # everyone on Earth and the static HTML can never spoil a puzzle someone can
 # still play. The valid window is 10:00 to 11:00 UTC; 10:13 and 10:43 sit inside
-# it while avoiding the congested :00 and :10 slots. The 10:43 run is a safety
-# retry (GitHub cron runs can be delayed or skipped); the rebuild is idempotent,
-# two runs produce the same site.
+# it while avoiding the congested :00 and :10 slots.
 #
-# A game whose hook fails does NOT stop the others: every hook is attempted, then
-# the job fails at the end so the failure still shows up in the Actions tab.
+# WHY THE 10:43 RUN IS CONDITIONAL (changed 2026-09-08)
+# It exists because GitHub silently drops scheduled runs, so 10:13 cannot be
+# trusted to fire. But it used to ping every hook unconditionally, rebuilding
+# all ten games a second time even when 10:13 had worked perfectly: about 300
+# wasted builds a month, roughly 2.4 $ of Vercel Build CPU, for zero change in
+# output.
+#
+# It now reads https://<domain>/build-info.json (written by each game's
+# react-router.config.ts buildEnd) and only pings the games that need it. Ten
+# builds become ten HTTP requests, and the safety net gets STRONGER: if both
+# runs are dropped the retry now says so out loud, which nothing detected
+# before.
+#
+# It compares builtAt against TODAY 10:00 UTC, not just the calendar day. A
+# deploy triggered by pushing at, say, 00:30 UTC also stamps today's date, but a
+# build made outside the 10:00-11:00 window prerenders an /answers that is still
+# the current puzzle for the Americas: a spoiler. Only a build inside the window
+# counts as "the daily rebuild already happened".
+#
+# Fail-safe by design: unreachable file, 404, malformed JSON or missing builtAt
+# all fall through to pinging the hook. A wasted build costs cents; a stale
+# /answers costs a day of freshness on the page Google is asked to crawl. The
+# 404 case is also the normal state until a game has deployed once carrying the
+# build-info.json change.
+#
+# A game whose hook fails does NOT stop the others: every hook is attempted,
+# then the job fails at the end so the failure still shows up in the Actions tab.
 #
 # Setup: see README.md (secret DEPLOY_HOOKS).
 
@@ -42,6 +65,10 @@ jobs:
       - name: Ping every Vercel deploy hook
         env:
           DEPLOY_HOOKS: ${{ secrets.DEPLOY_HOOKS }}
+          # Only the 10:43 schedule is the safety retry. A manual
+          # workflow_dispatch leaves this empty and therefore rebuilds
+          # unconditionally, which is what you want when firing it by hand.
+          IS_RETRY: ${{ github.event.schedule == '43 10 * * *' }}
         run: |
           set -uo pipefail
 
@@ -50,12 +77,26 @@ jobs:
             exit 1
           fi
           if ! printf '%s' "$DEPLOY_HOOKS" | jq -e . >/dev/null 2>&1; then
-            echo "::error::DEPLOY_HOOKS is not valid JSON (expected {\"<id>\": \"<hook url>\"})"
+            echo "::error::DEPLOY_HOOKS is not valid JSON (expected an object of id -> hook url)"
             exit 1
           fi
 
+          # A build counts as "today's daily rebuild" only if it landed inside
+          # the 10:00-11:00 UTC spoiler-safe window. ISO 8601 UTC strings sort
+          # lexicographically, so a string comparison IS a date comparison.
+          THRESHOLD="$(date -u +%Y-%m-%d)T10:00:00"
+          if [ "$IS_RETRY" = "true" ]; then
+            echo "Safety retry: skipping games already rebuilt after $THRESHOLD UTC."
+          else
+            echo "Primary run: rebuilding every game."
+          fi
+
           failed=""
-          while read -r id; do
+          skipped=""
+          rebuilt=""
+          missed=""
+
+          while read -r id domain; do
             hook=$(printf '%s' "$DEPLOY_HOOKS" | jq -r --arg id "$id" '.[$id] // empty')
             if [ -z "$hook" ]; then
               echo "::warning::$id has no entry in DEPLOY_HOOKS, skipped"
@@ -65,24 +106,56 @@ jobs:
             # it back in an error message.
             echo "::add-mask::$hook"
 
-            # Vercel repond 201 + {"job":{"id":...,"state":"PENDING"}} en succes,
-            # et un {"error":{"code":...,"message":...}} explicite en echec. On
-            # garde le corps: sans lui, une panne GitHub (Vercel n'arrive plus a
-            # telecharger le repo, code "incorrect_git_source_info") et un hook
-            # reellement revoque produisent tous deux un 400 muet. Le corps ne
-            # contient jamais l'URL du hook, et elle est masquee de toute facon.
+            if [ "$IS_RETRY" = "true" ]; then
+              # Cache-busting query string: build-info.json is served from the
+              # Vercel CDN and we must not read a copy from before the rebuild.
+              stamp=$(date +%s)
+              info=$(curl --silent --max-time 20 \
+                       --header 'Cache-Control: no-cache' \
+                       "https://$domain/build-info.json?t=$stamp" 2>/dev/null || true)
+              built_at=$(printf '%s' "$info" | jq -r '.builtAt // empty' 2>/dev/null || true)
+
+              if [ -n "$built_at" ] && [ "$built_at" ">" "$THRESHOLD" ]; then
+                echo "skip  $id  already rebuilt at $built_at"
+                skipped="$skipped $id"
+                continue
+              fi
+              # Reaching here on the retry means the 10:13 run did not do its job.
+              missed="$missed $id"
+            fi
+
+            # Vercel answers 201 + a job object on success, and an explicit error
+            # object on failure. Keep the body: without it, a GitHub outage
+            # (Vercel cannot fetch the repo, code "incorrect_git_source_info")
+            # and a genuinely revoked hook both produce the same silent 400. The
+            # body never contains the hook URL, and it is masked anyway.
             resp=$(curl --silent --show-error --max-time 30 \
                      --request POST "$hook" \
-                     --write-out '\n%{http_code}' 2>&1)
+                     --write-out '\n%{http_code}' 2>&1 || true)
             code=$(printf '%s' "$resp" | tail -n1)
             payload=$(printf '%s' "$resp" | sed '$d')
 
             case "$code" in
-              2*) echo "ok    $id  HTTP $code" ;;
+              2*) echo "ok    $id  HTTP $code"
+                  rebuilt="$rebuilt $id" ;;
               *)  echo "::warning::$id: HTTP $code  $payload"
                   failed="$failed $id" ;;
             esac
-          done < <(jq -r '.[].id' sites.json)
+          done < <(jq -r '.[] | "\(.id) \(.domain)"' sites.json)
+
+          echo ""
+          echo "Rebuilt:${rebuilt:- none}"
+          if [ -n "$skipped" ]; then
+            echo "Skipped (already fresh):$skipped"
+          fi
+
+          # The retry firing for real means the primary run was dropped. Not an
+          # error (the retry just fixed it), but worth seeing in the Actions tab:
+          # if this shows up every day, the 10:13 slot has gone bad and the cron
+          # minute should move.
+          if [ "$IS_RETRY" = "true" ] && [ -n "$missed" ]; then
+            echo "::warning::10:13 run did not rebuild these, the retry did:$missed"
+          fi
 
           if [ -n "$failed" ]; then
             echo "::error::deploy hook failed for:$failed"
