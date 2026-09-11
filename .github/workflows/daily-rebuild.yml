@@ -7,39 +7,42 @@
 # reasoning as push-hourly.yml: GitHub bills per JOB, so ten repos pinging one
 # hook each cost ten times one job pinging ten hooks.
 #
-# WHY ~10:10 UTC: at that moment every timezone from UTC-10 to UTC+13 is on the
-# same calendar date, so the newest archive page (yesterday) is finished for
-# everyone on Earth and the static HTML can never spoil a puzzle someone can
-# still play. The valid window is 10:00 to 11:00 UTC; 10:13 and 10:43 sit inside
-# it while avoiding the congested :00 and :10 slots.
+# WHEN IT ACTUALLY RUNS
+# The crons say 10:13 and 10:43 UTC. From 10:00 UTC every timezone from UTC-10
+# eastward has finished yesterday, so the prerendered /answers can never spoil a
+# puzzle someone can still play. GitHub honours the schedule loosely: from
+# 2026-08-27 to 2026-09-10 the two runs started between 13:27 and 21:14 UTC, and
+# only 4 to 20 minutes apart. Late is harmless (still after 10:00, just a few
+# hours less fresh). Only a build BEFORE 10:00 UTC could spoil.
 #
-# WHY THE 10:43 RUN IS CONDITIONAL (changed 2026-09-08)
-# It exists because GitHub silently drops scheduled runs, so 10:13 cannot be
-# trusted to fire. But it used to ping every hook unconditionally, rebuilding
-# all ten games a second time even when 10:13 had worked perfectly: about 300
-# wasted builds a month, roughly 2.4 $ of Vercel Build CPU, for zero change in
-# output.
+# ONE REBUILD A DAY, NOT TWO (changed 2026-09-11)
+# The second schedule is a safety net for the day GitHub silently drops a run.
+# It used to ping every hook regardless, so all ten games were rebuilt twice a
+# day: about 300 wasted builds a month, roughly 2.4 $ of Vercel Build CPU.
 #
-# It now reads https://<domain>/build-info.json (written by each game's
-# react-router.config.ts buildEnd) and only pings the games that need it. Ten
-# builds become ten HTTP requests, and the safety net gets STRONGER: if both
-# runs are dropped the retry now says so out loud, which nothing detected
-# before.
+# A scheduled run now first asks the GitHub API whether another run of this
+# workflow already SUCCEEDED today after 10:00 UTC, and stops if one did. Both
+# runs share the concurrency group below, so the second never starts before the
+# first has finished and can always see its result. Whichever schedule fires
+# first does the work.
 #
-# It compares builtAt against TODAY 10:00 UTC, not just the calendar day. A
-# deploy triggered by pushing at, say, 00:30 UTC also stamps today's date, but a
-# build made outside the 10:00-11:00 window prerenders an /answers that is still
-# the current puzzle for the Americas: a spoiler. Only a build inside the window
-# counts as "the daily rebuild already happened".
+# First attempt (2026-09-08, replaced before it ever saved anything): read each
+# site's build-info.json and skip the games already rebuilt. With runs minutes
+# apart, most Vercel builds queued by the first run were not finished when the
+# second looked, so it re-pinged them anyway. The GitHub run history does not
+# depend on Vercel's build queue.
 #
-# Fail-safe by design: unreachable file, 404, malformed JSON or missing builtAt
-# all fall through to pinging the hook. A wasted build costs cents; a stale
-# /answers costs a day of freshness on the page Google is asked to crawl. The
-# 404 case is also the normal state until a game has deployed once carrying the
-# build-info.json change.
+# Limits, stated plainly:
+# - If BOTH schedules are dropped nothing runs, and nothing can report it.
+# - A first run with one failed hook ends in failure, so the second run rebuilds
+#   all ten. Wasteful but rare, and the safe direction.
+# - Any error while querying the API also falls through to rebuilding all ten.
+# - workflow_dispatch always rebuilds: firing it by hand means you want it.
 #
 # A game whose hook fails does NOT stop the others: every hook is attempted,
 # then the job fails at the end so the failure still shows up in the Actions tab.
+# GitHub runs this script under `bash -e`, hence `|| true` after each curl: one
+# site's DNS error or timeout must not end the loop.
 #
 # Setup: see README.md (secret DEPLOY_HOOKS).
 
@@ -55,6 +58,11 @@ concurrency:
   group: daily-rebuild
   cancel-in-progress: false
 
+# actions: read lets the job list this workflow's own past runs (see above).
+permissions:
+  actions: read
+  contents: read
+
 jobs:
   trigger-rebuild:
     runs-on: ubuntu-latest
@@ -65,10 +73,9 @@ jobs:
       - name: Ping every Vercel deploy hook
         env:
           DEPLOY_HOOKS: ${{ secrets.DEPLOY_HOOKS }}
-          # Only the 10:43 schedule is the safety retry. A manual
-          # workflow_dispatch leaves this empty and therefore rebuilds
-          # unconditionally, which is what you want when firing it by hand.
-          IS_RETRY: ${{ github.event.schedule == '43 10 * * *' }}
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -uo pipefail
 
@@ -81,22 +88,27 @@ jobs:
             exit 1
           fi
 
-          # A build counts as "today's daily rebuild" only if it landed inside
-          # the 10:00-11:00 UTC spoiler-safe window. ISO 8601 UTC strings sort
-          # lexicographically, so a string comparison IS a date comparison.
-          THRESHOLD="$(date -u +%Y-%m-%d)T10:00:00"
-          if [ "$IS_RETRY" = "true" ]; then
-            echo "Safety retry: skipping games already rebuilt after $THRESHOLD UTC."
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            # ISO 8601 UTC timestamps sort lexicographically, so this string
+            # comparison IS a date comparison.
+            since="$(date -u +%Y-%m-%d)T10:00:00Z"
+            done_run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow daily-rebuild.yml \
+                         --status success --limit 20 --json databaseId,createdAt \
+                         --jq "[.[] | select(.databaseId != $RUN_ID and .createdAt >= \"$since\")] | first | .databaseId // empty" \
+                         2>/dev/null || true)
+            if [ -n "$done_run" ]; then
+              echo "Already rebuilt today: run $done_run succeeded after $since. Nothing to do."
+              exit 0
+            fi
+            echo "No successful rebuild yet today after $since: rebuilding every game."
           else
-            echo "Primary run: rebuilding every game."
+            echo "Manual run: rebuilding every game."
           fi
 
           failed=""
-          skipped=""
           rebuilt=""
-          missed=""
 
-          while read -r id domain; do
+          while read -r id; do
             hook=$(printf '%s' "$DEPLOY_HOOKS" | jq -r --arg id "$id" '.[$id] // empty')
             if [ -z "$hook" ]; then
               echo "::warning::$id has no entry in DEPLOY_HOOKS, skipped"
@@ -105,24 +117,6 @@ jobs:
             # A deploy hook URL IS the credential: mask it before curl can echo
             # it back in an error message.
             echo "::add-mask::$hook"
-
-            if [ "$IS_RETRY" = "true" ]; then
-              # Cache-busting query string: build-info.json is served from the
-              # Vercel CDN and we must not read a copy from before the rebuild.
-              stamp=$(date +%s)
-              info=$(curl --silent --max-time 20 \
-                       --header 'Cache-Control: no-cache' \
-                       "https://$domain/build-info.json?t=$stamp" 2>/dev/null || true)
-              built_at=$(printf '%s' "$info" | jq -r '.builtAt // empty' 2>/dev/null || true)
-
-              if [ -n "$built_at" ] && [ "$built_at" ">" "$THRESHOLD" ]; then
-                echo "skip  $id  already rebuilt at $built_at"
-                skipped="$skipped $id"
-                continue
-              fi
-              # Reaching here on the retry means the 10:13 run did not do its job.
-              missed="$missed $id"
-            fi
 
             # Vercel answers 201 + a job object on success, and an explicit error
             # object on failure. Keep the body: without it, a GitHub outage
@@ -141,21 +135,10 @@ jobs:
               *)  echo "::warning::$id: HTTP $code  $payload"
                   failed="$failed $id" ;;
             esac
-          done < <(jq -r '.[] | "\(.id) \(.domain)"' sites.json)
+          done < <(jq -r '.[].id' sites.json)
 
           echo ""
           echo "Rebuilt:${rebuilt:- none}"
-          if [ -n "$skipped" ]; then
-            echo "Skipped (already fresh):$skipped"
-          fi
-
-          # The retry firing for real means the primary run was dropped. Not an
-          # error (the retry just fixed it), but worth seeing in the Actions tab:
-          # if this shows up every day, the 10:13 slot has gone bad and the cron
-          # minute should move.
-          if [ "$IS_RETRY" = "true" ] && [ -n "$missed" ]; then
-            echo "::warning::10:13 run did not rebuild these, the retry did:$missed"
-          fi
 
           if [ -n "$failed" ]; then
             echo "::error::deploy hook failed for:$failed"

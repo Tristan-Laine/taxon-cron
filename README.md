@@ -6,7 +6,7 @@ uniquement les deux tâches planifiées qui pilotent les 10 DLE.
 | Workflow | Cadence (UTC) | Ce qu'il fait |
 |---|---|---|
 | `push-hourly.yml` | toutes les heures, minute 23 | `GET /api/push-send` sur chaque jeu (nudge "streak at risk") |
-| `daily-rebuild.yml` | 10:13 et 10:43 | `POST` sur le deploy hook Vercel de chaque jeu (rollover des pages du jour) |
+| `daily-rebuild.yml` | 10:13 et 10:43 (en pratique l'après-midi) | `POST` sur le deploy hook Vercel de chaque jeu (rollover des pages du jour), **une seule fois par jour** : le second run s'arrête si le premier a réussi |
 
 ## Pourquoi ce repo existe
 
@@ -120,6 +120,13 @@ les runs y sont fréquemment supprimés en silence. Les anciens crons par repo,
 tous calés sur `0 * * * *`, ne tournaient qu'entre 33 % et 65 % du temps. D'où
 les minutes 23 / 13 / 43. Ne pas les ramener sur des minutes rondes.
 
-Pour `daily-rebuild`, la fenêtre horaire n'est en revanche pas négociable :
-entre 10:00 et 11:00 UTC, tous les fuseaux de UTC-10 à UTC+13 sont sur la même
-date, donc la page d'archive publiée ne peut spoiler personne.
+Pour `daily-rebuild`, seule la limite basse compte : un build **avant 10:00 UTC**
+pourrait spoiler UTC-10, qui n'a pas encore fini la veille. Après, c'est sans
+risque, juste un peu moins frais. Et c'est ce qui se passe : du 27 août au
+10 septembre 2026, GitHub a lancé ces deux runs entre 13:27 et 21:14 UTC, à
+4 à 20 minutes d'intervalle.
+
+Le second run interroge l'historique GitHub et s'arrête si un rebuild a déjà
+réussi aujourd'hui après 10:00 UTC. Il ne sert donc que le jour où GitHub saute
+le premier. Si les deux sautent, rien ne tourne et rien ne le signale. Détails
+dans l'en-tête du workflow.
