@@ -58,9 +58,11 @@ côté Vercel pour chaque projet.
 
 ### `DEPLOY_HOOKS`
 
-Les URLs de deploy hook Vercel, une par projet.
-Vercel → projet → Settings → Git → Deploy Hooks → hook `daily-rebuild`
-sur la branche `main`.
+Les URLs de deploy hook, une par projet. Vercel → projet → Settings → Git →
+Deploy Hooks → hook `daily-rebuild` sur la branche `main`.
+Sauf `overwatchdle`, sur Cloudflare depuis le 2026-10-30 : Workers & Pages →
+`overwatchdle` → Settings → Builds → Deploy Hooks, branche `main`
+(`https://api.cloudflare.com/client/v4/workers/builds/deploy_hooks/...`).
 
 ```json
 {

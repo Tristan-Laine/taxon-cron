@@ -82,7 +82,12 @@ if (hooks) {
       if (!v.startsWith('https://')) return 'ne commence pas par https://'
       let url
       try { url = new URL(v) } catch { return 'URL illisible' }
-      if (!url.hostname.endsWith('vercel.com')) return `pointe vers ${url.hostname}, attendu api.vercel.com`
+      // Vercel, or Cloudflare Workers Builds (OverwatchDLE since 2026-10-30).
+      if (url.hostname === 'api.cloudflare.com') {
+        if (!url.pathname.includes('/builds/deploy_hooks/')) return 'ne ressemble pas a un deploy hook Cloudflare'
+        return null
+      }
+      if (!url.hostname.endsWith('vercel.com')) return `pointe vers ${url.hostname}, attendu api.vercel.com ou api.cloudflare.com`
       if (!url.pathname.includes('/integrations/deploy/')) return 'ne ressemble pas a un deploy hook Vercel'
       return null
     },
