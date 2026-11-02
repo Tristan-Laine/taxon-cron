@@ -1,8 +1,9 @@
 // Hourly trigger for the "streak at risk" push of the games still on Vercel.
 //
 // GitHub's schedule ran push-hourly.yml only 4 to 6 times a day, and each route
-// only sends in a subscriber's 21:00 hour, so most evenings had no run. Cloudflare
-// runs this one every hour. A game on Cloudflare has its own trigger in its Worker
+// only sends in a subscriber's 21:00 hour, so most evenings had no run: that
+// schedule is off since 2026-11-02 (the workflow stays, by hand). Cloudflare runs
+// this one every hour. A game on Cloudflare has its own trigger in its Worker
 // (OverwatchDLE since 2026-11-02): "push": false on its line in sites.json. Once
 // every game has moved, this Worker can be deleted.
 //

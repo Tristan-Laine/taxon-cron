@@ -1,34 +1,26 @@
-# Hourly trigger for the "streak at risk" push, for EVERY game at once.
+# Manual run of the "streak at risk" push, for the games still on Vercel.
 #
-# Replaces the per-repo push-cron.yml that used to live in each DLE. One job per
-# hour pings all the sites instead of ten jobs doing one curl each: GitHub bills
-# a full minute per JOB (a 3 second curl costs the same as a 48 second build), so
-# ten separate repos cost ten times the same work.
+# NOT scheduled since 2026-11-02: even at minute 23, GitHub ran it only 4 to 6
+# times a day, and each route only sends in a subscriber's 21:00 hour (at Paris,
+# 4 evenings out of 19). The hourly trigger is now the Cloudflare Worker
+# taxon-push (push-worker/). This one stays to check the secrets by hand.
 #
 # Each /api/push-send route decides on its own who is in their local evening and
-# at risk, so an hourly trigger covers every timezone. The route is a no-op for
-# everyone not currently at risk and de-duplicates to at most one nudge per
-# subscriber per day.
-#
-# WHY MINUTE 23: scheduled runs fired at minute 0 are the most congested slot on
-# GitHub and get silently dropped. The old per-repo crons all fired at '0 * * * *'
-# and only landed about half the time (111 to 218 runs over 14 days, out of 336
-# expected). An off-peak minute is materially more reliable and costs nothing.
+# at risk, so a manual run sends only what the hourly one would have: the route is
+# a no-op for everyone not currently at risk and de-duplicates to at most one nudge
+# per subscriber per day.
 #
 # A game whose curl fails does NOT stop the others: every site is attempted, then
 # the job fails at the end so the failure still shows up in the Actions tab.
 #
 # Setup: see README.md (secret CRON_SECRETS).
 
-name: Streak push (hourly, all games)
+name: Streak push (manual, games on Vercel)
 
 on:
-  schedule:
-    - cron: '23 * * * *'
   workflow_dispatch: {}
 
-# If a run is still going when the next hour fires, skip the new one rather than
-# stacking sends.
+# Two manual runs never stack sends.
 concurrency:
   group: streak-push
   cancel-in-progress: false
@@ -82,7 +74,7 @@ jobs:
               echo "::warning::$id: HTTP $code  $payload"
               failed="$failed $id"
             fi
-          done < <(jq -r '.[] | "\(.id) \(.domain)"' sites.json)
+          done < <(jq -r '.[] | select(.push != false) | "\(.id) \(.domain)"' sites.json)
 
           if [ -n "$failed" ]; then
             echo "::error::push-send failed for:$failed"

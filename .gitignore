@@ -1,2 +1,4 @@
 # Local secret payloads used to feed `gh secret set`. Never commit these.
 *.local.json
+# Wrangler's local cache.
+.wrangler/
