@@ -3,7 +3,7 @@
   { "id": "dbdle", "name": "DBDLE", "domain": "dbdle.day" },
   { "id": "deadlockdle", "name": "DeadlockDLE", "domain": "deadlockdle.day" },
   { "id": "forhonordle", "name": "ForHonorDLE", "domain": "forhonordle.day" },
-  { "id": "overwatchdle", "name": "OverwatchDLE", "domain": "overwatchdle.day" },
+  { "id": "overwatchdle", "name": "OverwatchDLE", "domain": "overwatchdle.day", "push": false },
   { "id": "r6dle", "name": "R6DLE", "domain": "r6dle.day" },
   { "id": "rivalsdle", "name": "RivalsDLE", "domain": "rivalsdle.day" },
   { "id": "sf6dle", "name": "SF6DLE", "domain": "sf6dle.day" },

@@ -1,0 +1,18 @@
+// The hourly push of the games still on Vercel (index.js says why).
+// Deploy, from the repo's root:
+//   npx --yes wrangler@4.147.0 deploy --config push-worker/wrangler.jsonc
+// Secret CRON_SECRETS: the same JSON as GitHub's secret, { "<id>": "<token>" }.
+{
+  "name": "taxon-push",
+  "main": "index.js",
+  "compatibility_date": "2026-09-15",
+  // No address at all: it only runs on its schedule.
+  "workers_dev": false,
+  "preview_urls": false,
+  "triggers": {
+    "crons": ["5 * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}

@@ -8,6 +8,16 @@ uniquement les deux tâches planifiées qui pilotent les 10 DLE.
 | `push-hourly.yml` | toutes les heures, minute 23 | `GET /api/push-send` sur chaque jeu (nudge "streak at risk") |
 | `daily-rebuild.yml` | 10:13 et 10:43 (en pratique l'après-midi) | `POST` sur le deploy hook Vercel de chaque jeu (rollover des pages du jour), **une seule fois par jour** : le second run s'arrête si le premier a réussi |
 
+En plus, depuis le 2 novembre 2026, un petit Worker Cloudflare (`push-worker/`, nom
+`taxon-push`) lance `GET /api/push-send` chaque heure, minute 5, sur les jeux encore
+chez Vercel. GitHub ne lançait `push-hourly.yml` que 4 à 6 fois par jour, or chaque
+route n'envoie qu'à 21 h locale : à Paris, 4 soirées sur 19 étaient couvertes
+(14 octobre au 1er novembre). Un jeu passé chez Cloudflare a son propre déclencheur
+dans son Worker : `"push": false` sur sa ligne de `sites.json`, et ce Worker ne
+l'appelle plus. Quand les 10 y sont, supprimer `taxon-push`. Le reconstruire : voir
+`push-worker/wrangler.jsonc`. Vérifier un passage sans rien envoyer de plus :
+`npx wrangler tail taxon-push` autour de la minute 5, jamais `?force=1`.
+
 ## Pourquoi ce repo existe
 
 GitHub facture **une minute entamée par job**, pas le temps réel. Un `curl` de
